@@ -1,0 +1,59 @@
+
+"""
+DTO: {{ class_name }}
+Generated from AsyncAPI components.schemas.{{ schema_name }}
+"""
+from typing import Optional
+{% if has_literal %}
+from typing import Literal
+{% endif %}
+{% if has_datetime %}
+from datetime import datetime
+{% endif %}
+{% if base_class_name and base_module_name %}
+from .{{ base_module_name }}_dto import {{ base_class_name }}
+{% else %}
+from pydantic import BaseModel, ConfigDict
+{% endif %}
+
+
+def _to_camel(name: str) -> str:
+    parts = name.split("_")
+    return parts[0] + "".join(w.capitalize() for w in parts[1:])
+
+{% for nc in nested_classes %}
+class {{ nc.class_name }}(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, alias_generator=_to_camel, extra='{{ "allow" if allow_extra else "forbid" }}')
+
+{% for field_name, field_info in nc.properties.items() %}
+    {{ field_name | snake }}: {% if not field_info.get('required', False) %}Optional[{{ field_info | python_type }}]{% else %}{{ field_info | python_type }}{% endif %}{% if not field_info.get('required', False) %} = None{% endif %}
+
+{% endfor %}
+{% if not nc.properties %}
+    pass
+{% endif %}
+
+{% endfor %}
+class {{ class_name }}({{ base_class_name or 'BaseModel' }}):
+{% if not base_class_name %}
+    model_config = ConfigDict(populate_by_name=True, alias_generator=_to_camel, extra='{{ "allow" if allow_extra else "forbid" }}')
+{% endif %}
+
+{% for field_name, field_info in properties.items() %}
+    {{ field_name | snake }}: {% if not field_info.get('required', False) %}Optional[{{ field_info | python_type }}]{% else %}{{ field_info | python_type }}{% endif %}{% if not field_info.get('required', False) %} = None{% endif %}
+
+{% endfor %}
+{% if not properties %}
+    pass
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

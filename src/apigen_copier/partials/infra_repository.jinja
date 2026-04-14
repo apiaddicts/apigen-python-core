@@ -1,0 +1,66 @@
+from src.domain.repository.base_repository import BaseRepository
+from src.infrastructure.entities.{{ entity_name | lower }}.{{ entity_name | lower }}_entity import {{ entity_name | title }}Model
+from src.infrastructure.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import RelationshipProperty
+{% if not is_asyncapi %}
+from fastapi import Depends
+{% endif %}
+
+from sqlalchemy import select
+
+class {{ entity_name | title }}Repository(BaseRepository[{{ entity_name | title }}Model]):
+{% if is_asyncapi %}
+    def __init__(self, session: AsyncSession = None):
+{% else %}
+    def __init__(self, session: AsyncSession = Depends(get_db)):
+{% endif %}
+        super().__init__(model={{ entity_name | title }}Model, session=session)
+
+    async def get_all(self, limit: int = 20, offset: int = 0, expand: str = None, orderby: str = None, selection: str = None, filter_expr: str = None, **kwargs):
+        stmt = select(self.model)
+        stmt = self._apply_expansion(stmt, expand)
+        stmt = self._load_collections(stmt, expand)
+        stmt = self._apply_selection(stmt, selection)
+        stmt = self._apply_filter(stmt, filter_expr)
+
+        
+        for key, value in kwargs.items():
+            if value is not None and hasattr(self.model, key):
+                attr = getattr(self.model, key)
+                # Check if this is a relationship/collection attribute
+                if hasattr(attr, 'property') and isinstance(attr.property, RelationshipProperty):
+                    # Many-to-Many or One-to-Many relationship - use .any()
+                    related_model = attr.property.mapper.class_
+                    # Try to filter by 'name' field on related model, fallback to 'id'
+                    if hasattr(related_model, 'name'):
+                        stmt = stmt.where(attr.any(name=value))
+                    else:
+                        stmt = stmt.where(attr.any(id=value))
+                else:
+                    stmt = stmt.where(attr == value)
+        
+        if orderby:
+            stmt = self._apply_sorting(stmt, orderby)
+        else:
+            stmt = stmt.order_by(self.model.id)
+            
+        stmt = stmt.limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        items = result.scalars().all()
+        
+        if selection:
+            return [self._to_dict(item, selection, expand) for item in items]
+            
+        return [self._to_default_dict(item, expand) for item in items]
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

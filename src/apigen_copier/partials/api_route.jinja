@@ -1,0 +1,416 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices, field_validator
+from typing import List, Optional, Any, Union
+from datetime import date, datetime
+from decimal import Decimal
+import json as _json
+{% if is_standard_response %}
+from src.application.schemas.standard_response import StandardResponse, ResponseResult
+{% endif %}
+{% set _needs_input_model = [] %}
+{% for endpoint in endpoints %}
+{% if endpoint.method.upper() in ['POST', 'PUT'] %}
+{% set _ = _needs_input_model.append(true) %}
+{% elif not endpoint.response_class_name %}
+
+{% set _ns_content = namespace(has_content=false) %}
+{% for code, response in endpoint.responses.items() %}{% if code >= 200 and code < 300 and response.content %}{% set _ns_content.has_content = true %}{% endif %}{% endfor %}
+{% set _is_action = endpoint.method.upper() == 'GET' and '{' not in endpoint.mapping and not _ns_content.has_content %}
+{% if not _is_action %}
+{% set _ = _needs_input_model.append(true) %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% if _needs_input_model %}
+from src.domain.models.{{ entity_name | lower }}.{{ entity_name | lower }}_model import {{ entity_name | title }} as _{{ entity_name | title }}Input
+{% endif %}
+from src.infrastructure.service.{{ entity_name | lower }}.{{ entity_name | lower }}_service import {{ entity_name | title }}Service
+{% for import_line in sub_router_imports %}
+{{ import_line }}
+{% endfor %}
+
+router = APIRouter()
+
+{% for include_line in sub_router_includes %}
+{{ include_line }}
+{% endfor %}
+
+
+{% set ns = namespace(literal=[], param=[]) %}
+{% for endpoint in endpoints %}
+{% if '{' in endpoint.mapping %}
+{% set ns.param = ns.param + [endpoint] %}
+{% else %}
+{% set ns.literal = ns.literal + [endpoint] %}
+{% endif %}
+{% endfor %}
+{% set sorted_endpoints = ns.literal + ns.param %}
+
+
+{# --- Collect ALL ref_models needed (level 1 from endpoints) --- #}
+{% set _all_ref_models = [] %}
+{% for endpoint in sorted_endpoints %}
+{% if endpoint.response and endpoint.response.attributes %}
+{% for attr in endpoint.response.attributes %}
+{% if (attr.type == 'Relation' or attr.type == 'Array') and attr.ref_model and attr.ref_model not in _all_ref_models %}
+{% set _ = _all_ref_models.append(attr.ref_model) %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{# --- Collect level 2+ ref_models (relations of relations) --- #}
+{% set _deep_ref_models = [] %}
+{% for ref_model in _all_ref_models %}
+{% if entities is defined and ref_model in entities %}
+{% for attr in entities[ref_model].attributes %}
+{% if attr.is_exposed_in_schema and (attr.type == 'Relation' or (attr.is_array and attr.items_ref_model)) %}
+{% set sub_ref = attr.ref_model or attr.items_ref_model %}
+{% if sub_ref and sub_ref in entities and sub_ref not in _all_ref_models and sub_ref not in _deep_ref_models %}
+{% set _ = _deep_ref_models.append(sub_ref) %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{# --- Collect level 3 (relations of level 2 relations) --- #}
+{% set _l3_ref_models = [] %}
+{% for ref_model in _deep_ref_models %}
+{% if entities is defined and ref_model in entities %}
+{% for attr in entities[ref_model].attributes %}
+{% if attr.is_exposed_in_schema and (attr.type == 'Relation' or (attr.is_array and attr.items_ref_model)) %}
+{% set sub_ref = attr.ref_model or attr.items_ref_model %}
+{% if sub_ref and sub_ref in entities and sub_ref not in _all_ref_models and sub_ref not in _deep_ref_models and sub_ref not in _l3_ref_models %}
+{% set _ = _l3_ref_models.append(sub_ref) %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{# --- Build generation order: deepest first, then level 2, then level 1 --- #}
+{% set _gen_order = _l3_ref_models + _deep_ref_models + _all_ref_models %}
+{# Remove duplicates keeping first occurrence (deepest wins) #}
+{% set _gen_seen = [] %}
+{% set _gen_final = [] %}
+{% for m in _gen_order %}
+{% if m not in _gen_seen %}
+{% set _ = _gen_seen.append(m) %}
+{% set _ = _gen_final.append(m) %}
+{% endif %}
+{% endfor %}
+
+{# --- Generate nested classes in dependency order --- #}
+{% set _generated_nested = [] %}
+{% for ref_model in _gen_final %}
+{% if entities is defined and ref_model in entities and ref_model not in _generated_nested %}
+{% set _ = _generated_nested.append(ref_model) %}
+class {{ ref_model }}(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+{% for attr in entities[ref_model].attributes %}
+{% if attr.is_exposed_in_schema %}
+{% if attr.type == 'Relation' and attr.ref_model %}
+{# Include relation if the target class exists (already generated or will be via forward ref) #}
+{% if attr.ref_model in entities and attr.ref_model != entity_name %}
+    {{ attr.name }}: Optional[Union[int, str, {{ attr.ref_model }}]] = None
+{% endif %}
+{% elif attr.is_array and attr.items_ref_model %}
+{% if attr.items_ref_model in entities and attr.items_ref_model != entity_name %}
+    {{ attr.name }}: Optional[List[Union[int, str, {{ attr.items_ref_model }}]]] = None
+{% endif %}
+{% elif attr.type != 'Relation' %}
+{% if attr.has_json_conversion %}
+{% if attr.persistence and attr.persistence.column and attr.persistence.column != attr.name %}
+    {{ attr.name }}: Optional[List[Any]] = Field(default=None, validation_alias=AliasChoices("{{ attr.name }}", "{{ attr.persistence.column }}"))
+{% else %}
+    {{ attr.name }}: Optional[List[Any]] = None
+{% endif %}
+{% elif json_conversion_fields is defined and attr.name in json_conversion_fields %}
+    {{ attr.name }}: Optional[List[Any]] = None
+{% elif attr.persistence and attr.persistence.column and attr.persistence.column != attr.name %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = Field(default=None, validation_alias=AliasChoices("{{ attr.name }}", "{{ attr.persistence.column }}"))
+{% else %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = None
+{% endif %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% set _nested_json_fields = [] %}
+{% for attr in entities[ref_model].attributes %}
+{% if attr.is_exposed_in_schema and attr.has_json_conversion %}
+{% set _ = _nested_json_fields.append(attr.name) %}
+{% endif %}
+{% endfor %}
+{% if _nested_json_fields %}
+
+    @field_validator({{ _nested_json_fields | map('tojson') | join(', ') }}, mode='before')
+    @classmethod
+    def _parse_json_strings(cls, v):
+        if isinstance(v, str):
+            try:
+                return _json.loads(v)
+            except (ValueError, TypeError):
+                return [v] if v else []
+        return v
+{% endif %}
+
+{% endif %}
+{% endfor %}
+{# Rebuild all nested classes for forward reference resolution #}
+{% for ref_model in _gen_final %}
+{% if ref_model in _generated_nested %}
+{{ ref_model }}.model_rebuild()
+{% endif %}
+{% endfor %}
+
+
+{% set _generated_classes = [] %}
+{% for endpoint in sorted_endpoints %}
+{% if endpoint.response_class_name and endpoint.response_class_name not in _generated_classes %}
+{# ISSUE-023: Skip if already generated by expand section (it has AliasChoices etc.) #}
+{% if endpoint.response_class_name not in _generated_nested %}
+{% set _ = _generated_classes.append(endpoint.response_class_name) %}
+{# --- Find the matching entity for AliasChoices cross-reference --- #}
+{% set _resp_entity_name = namespace(value=none) %}
+{% if endpoint.response_class_name in entities %}
+{% set _resp_entity_name.value = endpoint.response_class_name %}
+{% elif entity_name in entities %}
+{% set _resp_entity_name.value = entity_name %}
+{% endif %}
+class {{ endpoint.response_class_name }}(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+{% for attr in endpoint.response.attributes %}
+{% if attr.type == 'Relation' and attr.ref_model %}
+    {{ attr.name }}: Optional[Union[int, str, {{ attr.ref_model }}]] = None
+{% elif attr.type == 'Array' and attr.ref_model %}
+    {{ attr.name }}: Optional[List[Union[int, str, {{ attr.ref_model }}]]] = None
+{% elif attr.type == 'Array' %}
+    {{ attr.name }}: Optional[List[Any]] = None
+{% elif json_conversion_fields is defined and attr.entity_field_name in json_conversion_fields %}
+{# --- Smart Mapping field: find column name from entity for AliasChoices --- #}
+{% set _col_name = namespace(value=none) %}
+{% if _resp_entity_name.value and entities[_resp_entity_name.value] is defined %}
+{% for eattr in entities[_resp_entity_name.value].attributes %}
+{% if eattr.name == attr.entity_field_name and eattr.persistence and eattr.persistence.column and eattr.persistence.column != attr.name %}
+{% set _col_name.value = eattr.persistence.column %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if _col_name.value %}
+    {{ attr.name }}: Optional[List[Any]] = Field(default=None, validation_alias=AliasChoices("{{ attr.name }}", "{{ _col_name.value }}"))
+{% else %}
+    {{ attr.name }}: Optional[List[Any]] = None
+{% endif %}
+{% else %}
+{# --- Regular field: check entity for column name alias --- #}
+{% set _col_name = namespace(value=none) %}
+{% if _resp_entity_name.value and entities[_resp_entity_name.value] is defined %}
+{% for eattr in entities[_resp_entity_name.value].attributes %}
+{% if eattr.name == (attr.entity_field_name or attr.name) and eattr.persistence and eattr.persistence.column and eattr.persistence.column != attr.name %}
+{% set _col_name.value = eattr.persistence.column %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if _col_name.value %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = Field(default=None, validation_alias=AliasChoices("{{ attr.name }}", "{{ _col_name.value }}"))
+{% else %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = None
+{% endif %}
+{% endif %}
+{% endfor %}
+{# --- field_validator for Smart Mapping fields --- #}
+{% set _resp_json_fields = [] %}
+{% for attr in endpoint.response.attributes %}
+{% if json_conversion_fields is defined and attr.entity_field_name in json_conversion_fields %}
+{% set _ = _resp_json_fields.append(attr.name) %}
+{% endif %}
+{% endfor %}
+{% if _resp_json_fields %}
+
+    @field_validator({{ _resp_json_fields | map('tojson') | join(', ') }}, mode='before')
+    @classmethod
+    def _parse_json_strings(cls, v):
+        if isinstance(v, str):
+            try:
+                return _json.loads(v)
+            except (ValueError, TypeError):
+                return [v] if v else []
+        return v
+{% endif %}
+
+{% set _ref_models = [] %}
+{% for attr in endpoint.response.attributes %}
+{% if (attr.type == 'Relation' or attr.type == 'Array') and attr.entity_field_name and attr.entity_field_name not in _ref_models %}
+{% set _ = _ref_models.append(attr.entity_field_name) %}
+{% endif %}
+{% endfor %}
+{% if _ref_models %}
+{{ endpoint.response_class_name }}.model_rebuild()
+{% endif %}
+
+{% endif %}
+{% endif %}
+{% endfor %}
+
+
+{% for endpoint in sorted_endpoints %}
+{% for err_code, err_schema in endpoint.error_responses.items() %}
+class {{ endpoint.error_class_name(err_code) }}(BaseModel):
+{% for attr in err_schema.attributes %}
+{% if attr.default_value is not none %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = {{ attr.default_value | tojson }}
+{% else %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = None
+{% endif %}
+{% endfor %}
+
+{% endfor %}
+{% endfor %}
+{% for endpoint in sorted_endpoints %}
+{% set path_mapping = endpoint.mapping.rstrip('/') %}
+{% if path_mapping and not path_mapping.startswith('/') %}{% set path_mapping = '/' + path_mapping %}{% endif %}
+{% set ns = namespace(status_code=none, response_is_array=false) %}
+{% for code, response in endpoint.responses.items() %}
+    {% if code >= 200 and code < 300 %}
+        {% set ns.status_code = code %}
+        {% if response.content and response.content.get('application/json') and response.content['application/json'].get('schema') and response.content['application/json']['schema'].get('type') == 'array' %}
+            {% set ns.response_is_array = true %}
+        {% endif %}
+    {% endif %}
+{% endfor %}
+
+{% set ns_has_content = namespace(value=false) %}
+{% for code, response in endpoint.responses.items() %}
+    {% if code >= 200 and code < 300 and response.content %}
+        {% set ns_has_content.value = true %}
+    {% endif %}
+{% endfor %}
+
+{% set _resp = namespace(has_relations=false, has_entity_fields=false) %}
+{% if endpoint.response_class_name and endpoint.response and endpoint.response.attributes %}
+    {% set _resp.has_entity_fields = true %}
+    {% for attr in endpoint.response.attributes %}
+        {% if attr.type == 'Relation' or attr.type == 'Array' %}
+            {% set _resp.has_relations = true %}
+        {% endif %}
+    {% endfor %}
+{% elif not endpoint.response_class_name and not ns_has_content.value %}
+
+{% elif not endpoint.response_class_name and ns_has_content.value %}
+
+    {% if endpoint.response and endpoint.response.attributes | length == 0 %}
+
+    {% elif entities is defined and entity_name in entities %}
+        {% set _resp.has_entity_fields = true %}
+        {% for attr in entities[entity_name].attributes %}
+            {% if attr.type == 'Relation' %}
+                {% set _resp.has_relations = true %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+{% endif %}
+
+{% set is_action = endpoint.method.upper() == 'GET' and '{' not in endpoint.mapping and not _resp.has_entity_fields and not endpoint.response_class_name %}
+
+{% set is_collection = endpoint.method.upper() == 'GET' and '{' not in endpoint.mapping and not is_action %}
+
+{% if is_collection and ns_has_content.value and not ns.response_is_array %}
+    {% set ns.response_is_array = true %}
+{% endif %}
+{% set effective_status = ns.status_code if ns.status_code else (204 if endpoint.method.upper() == 'DELETE' else none) %}
+
+{% set delete_no_schema = endpoint.method.upper() == 'DELETE' and not endpoint.response_class_name %}
+{% set no_body = effective_status in [204, 304] or delete_no_schema or is_action %}
+@router.{{ endpoint.method.lower() }}("{{ path_mapping }}"{% if ns.status_code %}, status_code={{ ns.status_code }}{% elif endpoint.method.upper() == 'DELETE' %}, status_code=204{% endif %}{% if endpoint.responses %}, responses={{ endpoint.responses }}{% endif %}{% if no_body %}, response_model=None{% elif is_standard_response %}, response_model=StandardResponse[{% if endpoint.response_class_name %}{% if ns.response_is_array %}List[{{ endpoint.response_class_name }}]{% else %}{{ endpoint.response_class_name }}{% endif %}{% elif ns.response_is_array %}List[_{{ entity_name | title }}Input]{% else %}_{{ entity_name | title }}Input{% endif %}]{% else %}, response_model={% if endpoint.response_class_name %}{% if ns.response_is_array %}List[{{ endpoint.response_class_name }}]{% else %}{{ endpoint.response_class_name }}{% endif %}{% elif ns.response_is_array %}List[_{{ entity_name | title }}Input]{% else %}_{{ entity_name | title }}Input{% endif %}{% endif %}{% if endpoint.method.upper() == 'GET' and not is_action %}, response_model_exclude_none=True{% endif %})
+async def {{ endpoint.name }}(
+    {% if endpoint.method.upper() in ['POST', 'PUT'] %}{% if endpoint.request and endpoint.request.is_collection %}payload: List[_{{ entity_name | title }}Input],{% else %}payload: _{{ entity_name | title }}Input,{% endif %}{% endif %}
+    {% for param in endpoint.parameters %}
+    {% set p_name = param.name | replace('$', '') %}
+    {{ p_name }}: {% if param.in == 'path' %}{{ pk_python_type | default('int') }}{% elif param.type == 'integer' %}int{% elif param.type == 'boolean' %}bool{% else %}str{% endif %} = {% if param.in == 'path' %}Path(...){% else %}Query(None{% if param.name.startswith('$') %}, alias="{{ param.name }}"{% endif %}){% endif %},
+    {% endfor %}
+{% set param_names = endpoint.parameters | map(attribute='name') | list %}
+
+{% if is_collection and 'limit' not in param_names %}
+    limit: int = Query(20, ge=1),
+{% endif %}
+{% if is_collection and 'offset' not in param_names %}
+    offset: int = Query(0, ge=0),
+{% endif %}
+    service: {{ entity_name | title }}Service = Depends()
+):
+{% if endpoint.method.upper() == 'GET' %}
+{% if is_action %}
+    return JSONResponse(status_code={{ effective_status if effective_status else 200 }}, content={"message": "{{ endpoint.name }}"})
+{% else %}
+    {% set path_params = endpoint.parameters | selectattr("in", "equalto", "path") | list %}
+    {% if path_params %}
+    result = await service.get_by_id({% for p in path_params %}{{ p.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% if _resp.has_relations and 'expand' in param_names %}, expand=expand{% endif %}{% if _resp.has_entity_fields and 'select' in param_names %}, select=select{% endif %})
+    if not result:
+{% if 404 in endpoint.error_responses %}
+        return JSONResponse(status_code=404, content={{ endpoint.error_class_name(404) }}().model_dump(exclude_none=True))
+{% else %}
+        raise HTTPException(status_code=404, detail="Item not found")
+{% endif %}
+{% if is_standard_response %}
+    return StandardResponse(result=ResponseResult(status=True, http_code={{ effective_status if effective_status else 200 }}), data=result)
+{% else %}
+    return result
+{% endif %}
+    {% else %}
+    {% set p_names = [] %}
+    {% for p in endpoint.parameters %}{% set _ = p_names.append(p.name | replace('$', '')) %}{% endfor %}
+    items = await service.get_all(limit=limit, offset=offset{% if 'expand' in p_names %}, expand=expand{% endif %}{% if 'orderby' in p_names %}, orderby=orderby{% endif %}{% if 'select' in p_names %}, select=select{% endif %}{% if 'filter' in p_names %}, filter=filter{% endif %}{% for param in endpoint.parameters %}{% set p_clean = param.name | replace('$', '') %}{% if p_clean not in ['limit', 'offset', 'expand', 'select', 'orderby', 'filter'] and param.in == 'query' %}, {{ p_clean }}={{ p_clean }}{% endif %}{% endfor %})
+{% if is_standard_response %}
+    return StandardResponse(result=ResponseResult(status=True, http_code={{ effective_status if effective_status else 200 }}, num_elements=len(items) if isinstance(items, list) else None), data=items)
+{% else %}
+    return items
+{% endif %}
+    {% endif %}
+{% endif %}
+{% elif endpoint.method.upper() == 'POST' %}
+{% if endpoint.request and endpoint.request.is_collection %}
+    results = []
+    for item in payload:
+        results.append(await service.create(item))
+{% if is_standard_response %}
+    return StandardResponse(result=ResponseResult(status=True, http_code={{ effective_status if effective_status else 201 }}, num_elements=len(results)), data=results)
+{% else %}
+    return results
+{% endif %}
+{% else %}
+    created = await service.create(payload)
+{% if is_standard_response %}
+    return StandardResponse(result=ResponseResult(status=True, http_code={{ effective_status if effective_status else 201 }}), data=created)
+{% else %}
+    return created
+{% endif %}
+{% endif %}
+{% elif endpoint.method.upper() == 'PUT' %}
+    updated = await service.update(payload)
+{% if is_standard_response %}
+    return StandardResponse(result=ResponseResult(status=True, http_code={{ effective_status if effective_status else 200 }}), data=updated)
+{% else %}
+    return updated
+{% endif %}
+{% elif endpoint.method.upper() == 'DELETE' %}
+    {% set path_params = endpoint.parameters | selectattr("in", "equalto", "path") | list %}
+    return await service.delete({% for p in path_params %}{{ p.name }}{% if not loop.last %}, {% endif %}{% endfor %})
+{% else %}
+    return {"message": "Not implemented"}
+{% endif %}
+{% endfor %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

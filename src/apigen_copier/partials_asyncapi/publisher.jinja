@@ -1,0 +1,33 @@
+{# Publisher template for send operations without reply (fire-and-forget). #}
+"""
+Publisher: {{ operation_name }}
+Channel: {{ channel_address }}
+{% if binding_model %}Entity: {{ binding_model }}{% endif %}
+"""
+{% if dto_class %}
+from src.application.dtos.{{ dto_module }}_dto import {{ dto_class }}
+{% endif %}
+
+
+{% set func_name = operation_name | snake %}
+{% if func_name.startswith('publish_') %}
+async def {{ func_name }}(broker, data: {{ dto_class | default('dict', true) }}) -> None:
+{% else %}
+async def publish_{{ func_name }}(broker, data: {{ dto_class | default('dict', true) }}) -> None:
+{% endif %}
+    """Publish a message to {{ channel_address }}.
+
+    Fire-and-forget — no reply expected.
+    """
+    await broker.publish(data, topic="{{ channel_address }}")
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

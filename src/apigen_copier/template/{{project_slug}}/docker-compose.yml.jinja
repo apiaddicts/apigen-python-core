@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    {% if project.data_driver == "mssql" %}
+    platform: linux/amd64
+    {% endif %}
+    ports:
+      - "{% if project.data_driver == 'postgresql' %}8010{% elif project.data_driver == 'mysql' %}8011{% elif project.data_driver == 'mssql' %}8012{% else %}8000{% endif %}:8000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

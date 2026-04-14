@@ -1,0 +1,78 @@
+import logging
+from faststream import Context, Logger
+from faststream.{{ protocol }} import {{ 'Rabbit' if protocol == 'rabbit' else 'Kafka' }}Broker
+from fastapi import Depends
+from infrastructure.database import get_db_session
+
+{% if binding_model %}
+from infrastructure.service.{{ binding_model.lower() }}.{{ binding_model.lower() }}_service import {{ binding_model }}Service
+from application.dtos.{{ msg_name.lower() }} import {{ msg_name }}
+{% if binding_action == 'create' or binding_action == 'update' %}
+from infrastructure.mappers.{{ binding_model.lower() }}.{{ binding_model.lower() }}_mapper import {{ binding_model }}Mapper
+{% endif %}
+{% else %}
+# TODO: Import your custom service and DTOs here
+# from application.dtos.{{ msg_name.lower() }} import {{ msg_name }}
+{% endif %}
+
+logger = logging.getLogger(__name__)
+
+{% if reply_channel %}
+@broker.publisher("{{ reply_channel }}")
+{% endif %}
+{% if filter_logic %}
+def filter_for_{{ operation_name }}(msg) -> bool:
+    {{ filter_logic }}
+@broker.subscriber("{{ channel_address }}", filter=filter_for_{{ operation_name }})
+{% else %}
+@broker.subscriber("{{ channel_address }}")
+{% endif %}
+async def {{ operation_name }}(
+    {% if msg_name %}msg: {{ msg_name }},{% else %}msg: dict,{% endif %}
+    logger: Logger = Context(),
+    session = Depends(get_db_session)
+):
+    """
+    Handler for {{ operation_name }} (Action: {{ binding_action }})
+    """
+    logger.info(f"Received message on {{ channel_address }}")
+    
+    {% if binding_model %}
+    service = {{ binding_model }}Service(session)
+    
+    {% if binding_action == 'create' %}
+    entity = {{ binding_model }}Mapper.to_entity(msg)
+    result = await service.create(entity)
+    {% elif binding_action == 'update' %}
+    entity = {{ binding_model }}Mapper.to_entity(msg)
+    result = await service.update(entity.{{ primary_key_attr|default('id') }}, entity)
+    {% elif binding_action == 'delete' %}
+    # Assuming the msg contains the ID to delete
+    result = await service.delete(msg.{{ primary_key_attr|default('id') }})
+    {% else %}
+    # Custom business logic for {{ binding_model }}
+    # result = await service.custom_action(...)
+    result = None
+    {% endif %}
+    
+    {% else %}
+    # TODO: Implement custom business logic here
+    result = None
+    {% endif %}
+    
+    {% if reply_channel %}
+    if result:
+        # TODO: Format result into Reply DTO
+        return result
+    {% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

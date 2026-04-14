@@ -1,0 +1,172 @@
+{# Main application entrypoint for FastStream async service. #}
+"""
+{{ project_name }} — FastStream Application
+
+Auto-generated from AsyncAPI specification.
+"""
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager
+from faststream import FastStream, ContextRepo
+from src.broker.config import broker
+{% if broker_protocol == 'amqp' %}
+from faststream.rabbit import RabbitQueue
+{% endif %}
+
+{% for handler_module, handler_func in handler_imports %}
+from src.handlers.{{ handler_module }} import handle_{{ handler_func }}
+{% endfor %}
+
+{% set seen_dtos = [] %}
+{% for op_name, dto_info in dto_map.items() %}
+{% if dto_info.dto_class and dto_info.dto_module and dto_info.dto_module not in seen_dtos %}
+from src.application.dtos.{{ dto_info.dto_module }}_dto import {{ dto_info.dto_class }}
+{% if seen_dtos.append(dto_info.dto_module) %}{% endif %}
+{% endif %}
+{% endfor %}
+
+{# Import publishers #}
+{% for pub_module, pub_func in publisher_imports %}
+{% set func_name = pub_func %}
+{% if func_name.startswith('publish_') %}
+from src.publishers.{{ pub_module }} import {{ func_name }}
+{% else %}
+from src.publishers.{{ pub_module }} import publish_{{ func_name }}
+{% endif %}
+{% endfor %}
+
+{# Import RPC clients #}
+{% for rpc_module, rpc_func in rpc_imports %}
+from src.rpc.{{ rpc_module }} import {{ rpc_func }}
+{% endfor %}
+
+from src.middleware.error_handler import safe_handle
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MAX_HANDLER_CONCURRENCY = int(os.getenv("MAX_HANDLER_CONCURRENCY", "10"))
+
+
+@asynccontextmanager
+async def lifespan(context: ContextRepo):
+    """Graceful startup and shutdown — closes broker and DB connections cleanly."""
+    from src.health import health_check_loop, remove_health_file_sync
+    logger.info("Service starting up...")
+    health_task = asyncio.create_task(health_check_loop())
+    yield
+    logger.info("Service shutting down gracefully...")
+    health_task.cancel()
+    remove_health_file_sync()
+    await broker.close()
+    try:
+        from src.infrastructure.database import engine
+        await engine.dispose()
+        logger.info("Database connection pool closed.")
+    except ImportError:
+        pass
+    logger.info("All connections closed.")
+
+app = FastStream(broker, lifespan=lifespan)
+
+{# Declare RabbitMQ queues with AMQP bindings (durable, auto_delete) #}
+{% if broker_protocol == 'amqp' %}
+# ── Queue declarations ──────────────────────────────────────────
+{% for op_name, op in receive_ops.items() %}
+{% set q = op.channel.bindings.get('amqp', {}).get('queue', {}) %}
+{# Replace {param} with * wildcard for RabbitMQ routing keys #}
+{% set resolved_addr = op.channel_address | regex_replace('\\{[^}]+\\}', '*') %}
+{{ op_name | snake }}_queue = RabbitQueue("{{ resolved_addr }}", durable={{ q.get('durable', False) | string }}, auto_delete={{ q.get('autoDelete', False) | string }})
+{% endfor %}
+{% endif %}
+
+# ── Register handlers (receive operations) ──────────────────────
+{% for topic_addr, ops_list in grouped_receive_ops.items() %}
+{% set first_op_name = ops_list[0][0] %}
+{% set first_op = ops_list[0][1] %}
+{% if broker_protocol == 'amqp' %}
+@broker.subscriber({{ first_op_name | snake }}_queue)
+{% else %}
+{% if '{' in first_op.channel_address %}
+{% set kafka_pattern = first_op.channel_address | regex_replace('\\{[^}]+\\}', '[^.]+') %}
+@broker.subscriber(pattern="{{ kafka_pattern }}"{% if first_op.kafka_group_id %}, group_id="{{ first_op.kafka_group_id }}"{% endif %}, max_workers=MAX_HANDLER_CONCURRENCY)
+{% else %}
+@broker.subscriber("{{ topic_addr }}"{% if first_op.kafka_group_id %}, group_id="{{ first_op.kafka_group_id }}"{% endif %}, max_workers=MAX_HANDLER_CONCURRENCY)
+{% endif %}
+{% endif %}
+{% if ops_list | length == 1 %}
+{% set op_name = first_op_name %}
+{% set op = first_op %}
+{% set dto_class = dto_map[op_name].dto_class if dto_map[op_name].dto_class else 'dict' %}
+async def _{{ op_name | snake }}(data: {{ dto_class }}) -> None:
+    {% if op.binding_model %}
+    from src.infrastructure.service.{{ op.binding_model | lower }}.{{ op.binding_model | lower }}_service import {{ op.binding_model | lower | capitalize }}Service
+    from src.infrastructure.repository.{{ op.binding_model | lower }}.{{ op.binding_model | lower }}_repository import {{ op.binding_model | lower | capitalize }}Repository
+    from src.infrastructure.database import async_session
+    async with async_session() as session:
+        repo = {{ op.binding_model | lower | capitalize }}Repository(session=session)
+        service = {{ op.binding_model | lower | capitalize }}Service(repository=repo)
+        await safe_handle(handle_{{ op_name | snake }}, data, operation_name="{{ op_name }}", service=service)
+    {% else %}
+    await safe_handle(handle_{{ op_name | snake }}, data, operation_name="{{ op_name }}")
+    {% endif %}
+{% else %}
+{# Sort ops by required_count desc — most specific DTO first (ASYNC-064) #}
+{% set sorted_ops = ops_list | sort(attribute='1.required_count', reverse=true) %}
+async def _{{ topic_addr | replace('.', '_') | replace('-', '_') }}(data: dict) -> None:
+    from src.infrastructure.database import async_session
+    async with async_session() as session:
+        _matched = False
+{% for op_name, op in sorted_ops %}
+{% set dto_cls = dto_map[op_name].dto_class if dto_map[op_name].dto_class else None %}
+{% if dto_cls %}
+        if not _matched:
+            try:
+                parsed = {{ dto_cls }}(**data) if isinstance(data, dict) else data
+                _matched = True
+            except Exception:
+                parsed = None
+            if _matched:
+{% if op.binding_model %}
+                from src.infrastructure.service.{{ op.binding_model | lower }}.{{ op.binding_model | lower }}_service import {{ op.binding_model | lower | capitalize }}Service
+                from src.infrastructure.repository.{{ op.binding_model | lower }}.{{ op.binding_model | lower }}_repository import {{ op.binding_model | lower | capitalize }}Repository
+                repo = {{ op.binding_model | lower | capitalize }}Repository(session=session)
+                svc = {{ op.binding_model | lower | capitalize }}Service(repository=repo)
+                await safe_handle(handle_{{ op_name | snake }}, parsed, operation_name="{{ op_name }}", service=svc)
+{% else %}
+                await safe_handle(handle_{{ op_name | snake }}, parsed, operation_name="{{ op_name }}")
+{% endif %}
+{% else %}
+{% if op.binding_model %}
+        if not _matched:
+            from src.infrastructure.service.{{ op.binding_model | lower }}.{{ op.binding_model | lower }}_service import {{ op.binding_model | lower | capitalize }}Service
+            from src.infrastructure.repository.{{ op.binding_model | lower }}.{{ op.binding_model | lower }}_repository import {{ op.binding_model | lower | capitalize }}Repository
+            repo = {{ op.binding_model | lower | capitalize }}Repository(session=session)
+            svc = {{ op.binding_model | lower | capitalize }}Service(repository=repo)
+            await safe_handle(handle_{{ op_name | snake }}, data, operation_name="{{ op_name }}", service=svc)
+            _matched = True
+{% else %}
+        if not _matched:
+            await safe_handle(handle_{{ op_name | snake }}, data, operation_name="{{ op_name }}")
+            _matched = True
+{% endif %}
+{% endif %}
+{% endfor %}
+        if not _matched:
+            logging.getLogger(__name__).warning(
+                "No DTO matched for topic={{ topic_addr }}, data keys=%s", list(data.keys()) if isinstance(data, dict) else type(data)
+            )
+{% endif %}
+{% endfor %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

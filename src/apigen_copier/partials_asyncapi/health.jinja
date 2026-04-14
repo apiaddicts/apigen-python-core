@@ -1,0 +1,106 @@
+{# File-based health check for consumer services.
+   Writes /tmp/healthy periodically while broker (and DB) are reachable.
+   Kubernetes uses exec probe: test -f /tmp/healthy
+   No HTTP server needed — consumers are not web servers.
+#}
+"""
+Health Check — {{ project_name }}
+
+File-based: writes /tmp/healthy while the service is connected.
+Kubernetes probe:
+  livenessProbe:
+    exec:
+      command: ["test", "-f", "/tmp/healthy"]
+    periodSeconds: 10
+"""
+import asyncio
+import logging
+import os
+
+logger = logging.getLogger("{{ project_name }}.health")
+
+HEALTH_FILE = os.getenv("HEALTH_FILE", "/tmp/healthy")
+HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "10"))
+_HEALTH_TIMEOUT = 5.0
+
+
+async def _check_broker() -> bool:
+    """Verify the broker connection is actually alive."""
+    try:
+        from src.broker.config import broker
+        if not broker._connection:
+            return False
+        if hasattr(broker, "ping"):
+            await asyncio.wait_for(broker.ping(), timeout=_HEALTH_TIMEOUT)
+        return True
+    except Exception:
+        return False
+
+
+{% if has_database %}
+async def _check_database() -> bool:
+    """Execute SELECT 1 with timeout to verify DB connectivity."""
+    try:
+        from src.infrastructure.database import async_session
+        async with async_session() as session:
+            await asyncio.wait_for(
+                session.execute(__import__("sqlalchemy").text("SELECT 1")),
+                timeout=_HEALTH_TIMEOUT,
+            )
+        return True
+    except Exception:
+        return False
+{% endif %}
+
+
+async def _is_healthy() -> bool:
+    """Check all dependencies."""
+    broker_ok = await _check_broker()
+{% if has_database %}
+    db_ok = await _check_database()
+    return broker_ok and db_ok
+{% else %}
+    return broker_ok
+{% endif %}
+
+
+async def health_check_loop():
+    """Periodically check health and write/remove the health file.
+
+    Call this as a background task from the lifespan or startup hook.
+    """
+    while True:
+        try:
+            if await _is_healthy():
+                open(HEALTH_FILE, "w").close()
+            else:
+                _remove_health_file()
+                logger.warning("Health check failed — removed %s", HEALTH_FILE)
+        except Exception as exc:
+            _remove_health_file()
+            logger.error("Health check error: %s", exc)
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
+
+def _remove_health_file():
+    """Remove the health file if it exists."""
+    try:
+        os.remove(HEALTH_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def remove_health_file_sync():
+    """Remove health file on shutdown (called from lifespan)."""
+    _remove_health_file()
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

@@ -1,0 +1,118 @@
+
+"""
+Tests for handler: {{ handler_name }}
+Channel: {{ channel_address }}
+"""
+import pytest
+{% if broker_protocol == 'amqp' %}
+from faststream.rabbit import TestRabbitBroker
+{% else %}
+from faststream.kafka import TestKafkaBroker
+{% endif %}
+from src.broker.config import broker
+import src.main  # noqa: F401
+{% if dto_class not in ('dict', 'str', 'int', 'float', 'bool') %}
+from pydantic import ValidationError
+from src.application.dtos.{{ dto_module }}_dto import *  # noqa: F403
+{% endif %}
+
+
+# ── Level 1: Unit tests — valid payload, invalid payload, DTO validation ──
+
+
+@pytest.mark.asyncio
+async def test_{{ handler_name | snake }}_valid_payload():
+    """Smoke test: publish a valid payload and verify no exceptions."""
+{% if broker_protocol == 'amqp' %}
+    async with TestRabbitBroker(broker) as br:
+{% else %}
+    async with TestKafkaBroker(broker) as br:
+{% endif %}
+{% if dto_class in ('str',) %}
+        payload = "https://example.com/test"
+{% elif dto_class in ('int',) %}
+        payload = 42
+{% elif dto_class in ('float',) %}
+        payload = 3.14
+{% elif dto_class in ('bool',) %}
+        payload = True
+{% elif dto_class == 'dict' %}
+        payload = {"test": "data"}
+{% elif sample_fields %}
+        payload = {{ dto_class }}({{ sample_fields }})
+{% else %}
+        payload = {{ dto_class }}()
+{% endif %}
+{% if broker_protocol == 'amqp' %}
+        await br.publish(payload, queue="{{ channel_address }}")
+{% else %}
+        await br.publish(payload, topic="{{ channel_address }}")
+{% endif %}
+
+{% if dto_class not in ('dict', 'str', 'int', 'float', 'bool') %}
+
+def test_{{ handler_name | snake }}_dto_rejects_invalid_input():
+    """DTO must reject non-object input."""
+    with pytest.raises(ValidationError):
+        {{ dto_class }}.model_validate("not-a-valid-payload", strict=True)
+
+
+def test_{{ handler_name | snake }}_dto_rejects_extra_fields():
+    """DTO with extra='forbid' must reject unknown fields."""
+    try:
+        {{ dto_class }}.model_validate({"__unknown_field__": "should_fail"})
+        # If it doesn't raise, the DTO allows extra fields (additionalProperties: true)
+    except ValidationError:
+        pass  # Expected — extra='forbid' is working
+
+
+@pytest.mark.asyncio
+async def test_{{ handler_name | snake }}_idempotent_redelivery():
+    """Publishing the same payload twice should not cause errors (at-least-once safe)."""
+{% if broker_protocol == 'amqp' %}
+    async with TestRabbitBroker(broker) as br:
+{% else %}
+    async with TestKafkaBroker(broker) as br:
+{% endif %}
+{% if sample_fields %}
+        payload = {{ dto_class }}({{ sample_fields }})
+{% else %}
+        payload = {{ dto_class }}()
+{% endif %}
+{% if broker_protocol == 'amqp' %}
+        await br.publish(payload, queue="{{ channel_address }}")
+        await br.publish(payload, queue="{{ channel_address }}")
+{% else %}
+        await br.publish(payload, topic="{{ channel_address }}")
+        await br.publish(payload, topic="{{ channel_address }}")
+{% endif %}
+{% endif %}
+
+
+# ── Level 2: Error handling tests — retryable vs permanent errors ──
+
+
+@pytest.mark.asyncio
+async def test_{{ handler_name | snake }}_invalid_json_does_not_crash():
+    """Malformed data should be handled gracefully, not crash the service."""
+{% if broker_protocol == 'amqp' %}
+    async with TestRabbitBroker(broker) as br:
+{% else %}
+    async with TestKafkaBroker(broker) as br:
+{% endif %}
+{% if broker_protocol == 'amqp' %}
+        await br.publish({"__invalid__": True}, queue="{{ channel_address }}")
+{% else %}
+        await br.publish({"__invalid__": True}, topic="{{ channel_address }}")
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

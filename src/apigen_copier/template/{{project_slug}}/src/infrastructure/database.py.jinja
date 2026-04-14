@@ -1,0 +1,79 @@
+"""
+Database Connection - Infrastructure layer for database access.
+"""
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+
+from sqlalchemy.engine.url import make_url, URL
+
+{% if project.data_driver == 'sqlite' %}
+url = make_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db"))
+{% elif project.data_driver == 'postgresql' %}
+if os.getenv("DATABASE_URL"):
+    url = make_url(os.getenv("DATABASE_URL"))
+else:
+    url = URL.create(
+        drivername="postgresql+asyncpg",
+        username=os.getenv("DB_USER", "user"),
+        password=os.getenv("DB_PASSWORD", "password"),
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "dbname")
+    )
+{% elif project.data_driver == 'mysql' %}
+url = URL.create(
+    drivername="mysql+aiomysql",
+    username=os.getenv("DB_USER", "user"),
+    password=os.getenv("DB_PASSWORD", "password"),
+    host=os.getenv("DB_HOST", "localhost"),
+    port=int(os.getenv("DB_PORT", "3306")),
+    database=os.getenv("DB_NAME", "dbname")
+)
+{% elif project.data_driver == 'mssql' %}
+url = URL.create(
+    drivername="mssql+aioodbc",
+    username=os.getenv("DB_USER", "sa"),
+    password=os.getenv("DB_PASSWORD", "password"),
+    host=os.getenv("DB_HOST", "localhost"),
+    port=int(os.getenv("DB_PORT", "1433")),
+    database=os.getenv("DB_NAME", "dbname"),
+    query={"driver": "ODBC Driver 18 for SQL Server", "TrustServerCertificate": "yes"}
+)
+{% else %}
+# Fallback or default
+url = make_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db"))
+{% endif %}
+
+engine = create_async_engine(url, echo=False)
+async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+Base = declarative_base()
+
+
+async def init_db():
+    {% for entity_name in entities %}
+    from src.infrastructure.entities.{{ entity_name | lower }}.{{ entity_name | lower }}_entity import {{ entity_name | title }}Model
+    {% endfor %}
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+async def get_db():
+    """Dependency for database session injection."""
+    async with async_session() as session:
+        yield session
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

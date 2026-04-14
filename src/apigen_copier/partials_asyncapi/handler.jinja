@@ -1,0 +1,109 @@
+{# FastStream handler template for receive operations (CRUD + custom).
+   Each handler subscribes to a topic and processes incoming messages.
+
+   field_map: list of {attr, path, json_key} dicts mapping domain model attributes
+   to DTO access paths. When dto_class is present, uses dot notation (data.field).
+   When dto_class is absent (data: dict), uses bracket notation (data["jsonKey"]).
+#}
+"""
+Handler: {{ operation_name }}
+Channel: {{ channel_address }}
+Action: {{ binding_action | default('custom') }}
+{% if binding_model %}Entity: {{ binding_model }}{% endif %}
+"""
+{% if binding_model %}
+from src.infrastructure.service.{{ binding_model | lower }}.{{ binding_model | lower }}_service import {{ binding_model | lower | capitalize }}Service
+from src.domain.models.{{ binding_model | lower }}.{{ binding_model | lower }}_model import {{ binding_model | lower | capitalize }}
+{% endif %}
+{% if dto_class and dto_module %}
+from src.application.dtos.{{ dto_module }}_dto import {{ dto_class }}
+{% endif %}
+
+{% if binding_action == 'create' %}
+async def handle_{{ operation_name | snake }}(data: {{ dto_class | default('dict', true) }}, service: {{ binding_model | lower | capitalize }}Service) -> None:
+    """Idempotent create — inserts if not exists, skips if duplicate (at-least-once safe)."""
+{% if field_map %}
+    model = {{ binding_model | lower | capitalize }}(
+{% for f in field_map %}
+{% if not dto_class %}
+{% if f.needs_str_cast %}
+        {{ f.attr }}=str(data.get("{{ f.json_key }}")) if data.get("{{ f.json_key }}") is not None else None,
+{% else %}
+        {{ f.attr }}=data.get("{{ f.json_key }}"),
+{% endif %}
+{% else %}
+{% if f.needs_str_cast %}
+        {{ f.attr }}=str({{ f.path }}) if {{ f.path }} is not None else None,
+{% else %}
+        {{ f.attr }}={{ f.path }},
+{% endif %}
+{% endif %}
+{% endfor %}
+    )
+{% elif dto_module %}
+    model = {{ binding_model | lower | capitalize }}(**data.model_dump())
+{% else %}
+    model = {{ binding_model | lower | capitalize }}({{ scalar_attr_name | default('value', true) }}=data)
+{% endif %}
+    await service.create_or_ignore(model)
+{% elif binding_action == 'update' %}
+async def handle_{{ operation_name | snake }}(data: {{ dto_class | default('dict', true) }}, service: {{ binding_model | lower | capitalize }}Service) -> None:
+    """Update an existing {{ binding_model }} from incoming event."""
+{% if field_map %}
+    model = {{ binding_model | lower | capitalize }}(
+{% for f in field_map %}
+{% if not dto_class %}
+{% if f.needs_str_cast %}
+        {{ f.attr }}=str(data.get("{{ f.json_key }}")) if data.get("{{ f.json_key }}") is not None else None,
+{% else %}
+        {{ f.attr }}=data.get("{{ f.json_key }}"),
+{% endif %}
+{% else %}
+{% if f.needs_str_cast %}
+        {{ f.attr }}=str({{ f.path }}) if {{ f.path }} is not None else None,
+{% else %}
+        {{ f.attr }}={{ f.path }},
+{% endif %}
+{% endif %}
+{% endfor %}
+    )
+{% else %}
+    model = {{ binding_model | lower | capitalize }}(**data.model_dump())
+{% endif %}
+    await service.update(model)
+{% elif binding_action == 'delete' %}
+async def handle_{{ operation_name | snake }}(data: {{ dto_class | default('dict', true) }}, service: {{ binding_model | lower | capitalize }}Service) -> None:
+    """Delete a {{ binding_model }} from incoming event."""
+{% set pk_field = field_map | selectattr('attr', 'equalto', 'id') | first %}
+{% if dto_class %}
+{% if pk_field %}
+    await service.delete({{ pk_field.path }})
+{% else %}
+    await service.delete(data.id)
+{% endif %}
+{% else %}
+{% if pk_field %}
+    await service.delete(data.get("{{ pk_field.json_key }}"))
+{% else %}
+    await service.delete(data.get("id") or data.get("entityId"))
+{% endif %}
+{% endif %}
+{% else %}
+async def handle_{{ operation_name | snake }}(data: {{ dto_class | default('dict', true) }}) -> None:
+    """Custom handler stub — implement your business logic here.
+
+    TODO: Add your custom processing logic for {{ operation_name }}.
+    """
+    pass
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

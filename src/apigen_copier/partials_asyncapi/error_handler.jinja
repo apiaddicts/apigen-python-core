@@ -1,0 +1,102 @@
+{# Error handling middleware.
+   Classifies errors into retryable (re-raised for broker redelivery),
+   permanent (sent to DLQ), and unknown (DLQ as safety net).
+   Prevents a single handler error from crashing the entire app.
+#}
+"""
+Error Handling — classified error handling with DLQ support.
+
+Auto-generated from AsyncAPI specification.
+"""
+import logging
+import traceback
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from pydantic import ValidationError
+
+logger = logging.getLogger("{{ project_name }}.error_handler")
+
+# Retryable errors — re-raised so the broker redelivers the message
+_RETRYABLE_ERRORS = (ConnectionError, TimeoutError, OSError)
+
+
+async def safe_handle(
+    handler_fn: Callable,
+    data: Any,
+    *,
+    operation_name: str,
+    **handler_kwargs,
+) -> None:
+    """Execute handler with classified error handling.
+
+    - ValidationError → permanent failure → DLQ (message is malformed)
+    - ConnectionError / TimeoutError / OSError → transient → re-raise for broker retry
+    - Unknown errors → DLQ as safety net
+    """
+    try:
+        await handler_fn(data, **handler_kwargs)
+    except ValidationError as exc:
+        logger.error(
+            "PERMANENT error (validation) | operation=%s | timestamp=%s | error=%s",
+            operation_name,
+            datetime.now(timezone.utc).isoformat(),
+            str(exc),
+        )
+        await _send_to_dlq(data, operation_name, exc)
+    except _RETRYABLE_ERRORS as exc:
+        logger.warning(
+            "RETRYABLE error | operation=%s | timestamp=%s | error=%s — re-raising for broker retry",
+            operation_name,
+            datetime.now(timezone.utc).isoformat(),
+            str(exc),
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "UNKNOWN error | operation=%s | timestamp=%s | error=%s",
+            operation_name,
+            datetime.now(timezone.utc).isoformat(),
+            str(exc),
+        )
+        logger.debug("Traceback:\n%s", traceback.format_exc())
+        await _send_to_dlq(data, operation_name, exc)
+
+
+async def _send_to_dlq(original_data: Any, operation_name: str, error: Exception) -> None:
+    """Send failed message to Dead Letter Queue for investigation.
+
+    Uses the broker to publish to a dlq.{operation_name} topic.
+    If DLQ publishing itself fails, logs critically — the message is NOT lost
+    from the original topic (broker will redeliver if not acked).
+    """
+    dlq_payload = {
+        "original_data": str(original_data),
+        "operation": operation_name,
+        "error": str(error),
+        "error_type": type(error).__name__,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        from src.broker.config import broker
+        dlq_topic = f"dlq.{operation_name}"
+        await broker.publish(dlq_payload, dlq_topic)
+        logger.info("Message sent to DLQ topic=%s for operation=%s", dlq_topic, operation_name)
+    except Exception as dlq_exc:
+        logger.critical(
+            "FAILED to send to DLQ | operation=%s | dlq_error=%s | original_error=%s",
+            operation_name,
+            str(dlq_exc),
+            str(error),
+        )
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

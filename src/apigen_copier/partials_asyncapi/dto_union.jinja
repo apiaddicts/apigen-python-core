@@ -1,0 +1,34 @@
+
+"""
+DTO Union: {{ class_name }}
+Generated from AsyncAPI components.schemas.{{ schema_name }}
+Polymorphic oneOf — Pydantic discriminated union.
+"""
+from typing import Union
+{% if discriminator %}
+from typing import Annotated
+from pydantic import Field
+{% endif %}
+{% for variant in variants %}
+from .{{ variant.module }}_dto import {{ variant.class_name }}
+{% endfor %}
+
+
+{% if discriminator %}
+{{ class_name }} = Annotated[
+    Union[{{ variants | map(attribute='class_name') | join(', ') }}],
+    Field(discriminator="{{ discriminator }}")
+]
+{% else %}
+{{ class_name }} = Union[{{ variants | map(attribute='class_name') | join(', ') }}]
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

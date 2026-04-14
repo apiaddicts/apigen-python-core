@@ -1,0 +1,117 @@
+{# Broker configuration template — generates FastStream broker setup.
+   Supports Kafka and RabbitMQ based on spec protocol.
+   Security is driven by env vars at runtime. The spec defines the expected
+   security posture (SPEC_REQUIRES_SECURITY) — mismatches produce clear errors. #}
+"""
+Broker configuration for {{ protocol }} ({{ server_host }}).
+"""
+import logging
+import os
+{% if is_kafka %}
+import ssl
+{% endif %}
+
+from dotenv import load_dotenv
+{% if is_kafka %}
+from faststream.kafka import KafkaBroker
+from faststream.security import BaseSecurity, SASLScram256, SASLPlaintext
+{% else %}
+from faststream.rabbit import RabbitBroker
+{% endif %}
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+# The AsyncAPI spec {{ 'DEFINES' if has_security else 'DOES NOT define' }} security schemes.
+SPEC_REQUIRES_SECURITY = {{ 'True' if has_security else 'False' }}
+
+BROKER_HOST = os.getenv("BROKER_HOST", "{{ server_host }}")
+BROKER_USER = os.getenv("BROKER_USER", "")
+BROKER_PASS = os.getenv("BROKER_PASS", "")
+BROKER_SECURITY_PROTOCOL = os.getenv("BROKER_SECURITY_PROTOCOL", "{{ 'SASL_SSL' if has_security else 'PLAINTEXT' }}")
+BROKER_SASL_MECHANISM = os.getenv("BROKER_SASL_MECHANISM", "PLAIN")
+
+{% if is_kafka %}
+def _build_security():
+    """Build FastStream security object based on env vars and spec expectations."""
+    proto = BROKER_SECURITY_PROTOCOL.upper()
+    requires_sasl = proto in ("SASL_SSL", "SASL_PLAINTEXT")
+
+    # ── Validate coherence between spec and env config ──
+    if SPEC_REQUIRES_SECURITY and proto == "PLAINTEXT":
+        logger.warning(
+            "The AsyncAPI spec defines security schemes but BROKER_SECURITY_PROTOCOL "
+            "is set to PLAINTEXT. The broker will connect WITHOUT authentication. "
+            "If the broker rejects the connection, set BROKER_SECURITY_PROTOCOL=SASL_SSL "
+            "and configure BROKER_USER / BROKER_PASS in your .env file."
+        )
+
+    if not SPEC_REQUIRES_SECURITY and requires_sasl:
+        logger.warning(
+            "The AsyncAPI spec does NOT define security schemes but "
+            "BROKER_SECURITY_PROTOCOL is set to %s. Attempting SASL authentication. "
+            "If the broker rejects credentials, verify BROKER_USER / BROKER_PASS or "
+            "set BROKER_SECURITY_PROTOCOL=PLAINTEXT in your .env file.", proto
+        )
+
+    if requires_sasl and (not BROKER_USER or not BROKER_PASS):
+        raise RuntimeError(
+            f"BROKER_SECURITY_PROTOCOL={proto} requires SASL authentication but "
+            "BROKER_USER and/or BROKER_PASS are empty. Set them in your .env file."
+        )
+
+    if proto == "PLAINTEXT":
+        return None
+
+    use_ssl = proto in ("SASL_SSL", "SSL")
+    ssl_ctx = ssl.create_default_context() if use_ssl else None
+
+    if proto == "SSL":
+        return BaseSecurity(ssl_context=ssl_ctx)
+
+    mechanism = BROKER_SASL_MECHANISM.upper()
+    if mechanism in ("SCRAM-SHA-256", "SCRAM-SHA-512"):
+        return SASLScram256(username=BROKER_USER, password=BROKER_PASS, ssl_context=ssl_ctx)
+
+    return SASLPlaintext(username=BROKER_USER, password=BROKER_PASS, ssl_context=ssl_ctx)
+
+_security = _build_security()
+_kafka_kwargs = dict(
+    retry_backoff_ms=int(os.getenv("BROKER_RETRY_BACKOFF_MS", "1000")),
+    request_timeout_ms=int(os.getenv("BROKER_REQUEST_TIMEOUT_MS", "30000")),
+    connections_max_idle_ms=int(os.getenv("BROKER_IDLE_TIMEOUT_MS", "540000")),
+)
+broker = (
+    KafkaBroker(BROKER_HOST, security=_security, **_kafka_kwargs)
+    if _security
+    else KafkaBroker(BROKER_HOST, **_kafka_kwargs)
+)
+{% else %}
+if BROKER_USER and BROKER_PASS:
+    _amqp_url = f"amqp://{BROKER_USER}:{BROKER_PASS}@{BROKER_HOST}/"
+else:
+    if SPEC_REQUIRES_SECURITY:
+        logger.warning(
+            "The AsyncAPI spec defines security schemes but BROKER_USER / BROKER_PASS "
+            "are empty. Connecting as guest. If the broker rejects the connection, "
+            "configure credentials in your .env file."
+        )
+    _amqp_url = f"amqp://guest:guest@{BROKER_HOST}/"
+broker = RabbitBroker(
+    _amqp_url,
+    reconnect_interval=float(os.getenv("BROKER_RECONNECT_INTERVAL", "5.0")),
+    fail_fast=False,
+)
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

@@ -1,0 +1,23 @@
+_envops:
+  block_end_string: "%}"
+  block_start_string: "{%"
+  comment_end_string: "#}"
+  comment_start_string: "{#"
+  variable_end_string: "}}"
+  variable_start_string: "{{"
+
+project_name:
+  type: str
+  default: My API
+
+project_slug:
+  type: str
+  default: my_api
+
+description:
+  type: str
+  default: Generated API
+
+version:
+  type: str
+  default: 0.1.0

@@ -1,0 +1,49 @@
+from fastapi import FastAPI
+from src.api.routes.health import health_router
+
+{% for name, router in routers.items() %}
+{% set clean_name = name|lower|replace('/', '') %}
+from src.api.routes.{{ clean_name }}.{{ clean_name }}_routes import router as {{ clean_name }}_router
+{% endfor %}
+
+app = FastAPI(
+    title="{{ project.name }}",
+    description="{{ project.description }}",
+    version="{{ project.version }}"
+)
+
+from src.api.errors.handler import (
+    http_exception_handler, 
+    validation_exception_handler, 
+    sqlalchemy_exception_handler, 
+    generic_exception_handler
+)
+from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import SQLAlchemyError
+
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
+
+@app.on_event("startup")
+async def startup_event():
+    from src.infrastructure.database import init_db
+    await init_db()
+
+app.include_router(health_router, prefix="{{ project.prefix }}/health", tags=["Health"])
+
+{% for name, router in routers.items() %}
+{% set clean_name = name|lower|replace('/', '') %}
+app.include_router({{ clean_name }}_router, prefix="{{ project.prefix.rstrip('/') }}/{{ router.mapping.lstrip('/') }}"{% if router.entity %}, tags=["{{ router.entity|lower }}"]{% endif %})
+{% endfor %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

@@ -1,0 +1,126 @@
+{% set _has_json = attributes | selectattr("has_json_conversion") | list | length > 0 %}
+{% if _has_json %}
+import json
+{% endif %}
+from sqlalchemy import inspect
+from src.domain.models.{{ entity_name|lower }}.{{ entity_name|lower }}_model import {{ entity_name | title }}
+from src.infrastructure.entities.{{ entity_name|lower }}.{{ entity_name|lower }}_entity import {{ entity_name | title }}Model{% for attr in attributes if attr.is_array and not attr.items_ref_model and not attr.has_json_conversion %}{% set _child_tbl = table_name + '_' + attr.name | snake %}{% set _ns_imp = namespace(skip=false) %}{% if all_entities %}{% for _en, _ev in all_entities.items() if _ev.table_name == _child_tbl %}{% set _ns_imp.skip = true %}{% endfor %}{% endif %}{% if not _ns_imp.skip %}, {{ entity_name | title }}{{ attr.name | title }}Model{% endif %}{% endfor %}
+
+{% for attr in attributes %}
+{% if attr.items_ref_model %}
+from src.infrastructure.mappers.{{ attr.items_ref_model | lower }}.{{ attr.items_ref_model | lower }}_mapper import {{ attr.items_ref_model | title }}Mapper
+{% endif %}
+{% endfor %}
+
+from typing import Any, Dict, Union
+{% if _has_json %}
+
+def _safe_json_loads(s, default=None):
+    """Safely parse JSON string, returning default on failure."""
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, TypeError):
+        return [s] if s and default is None else default
+{% endif %}
+
+{# Pre-compute FK column names from ManyToOne relationships (same logic as entity) #}
+{% set ns_fk = namespace(fk_columns=[]) %}
+{% for attr in attributes %}
+{% if attr.type == 'Relation' and not attr.is_array and not (attr.persistence and attr.persistence.foreign_column and not attr.persistence.column) %}
+{% set fk_col = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name + '_id' %}
+{% set _ = ns_fk.fk_columns.append(fk_col) %}
+{% endif %}
+{% endfor %}
+class {{ entity_name | title }}Mapper:
+
+    @staticmethod
+    def to_domain(entity: Union[{{ entity_name | title }}Model, Dict[str, Any]]) -> {{ entity_name | title }}:
+        if not entity:
+            return None
+        
+        # Handle dict input (from safe repository selection)
+        if isinstance(entity, dict):
+            return {{ entity_name | title }}(
+                {% for attr in attributes %}
+                {% set _col_name_dict = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name | snake %}
+                {% if attr.type == 'Relation' and not attr.is_array %}
+                {{ attr.name }}=entity.get("{{ attr.name }}"),
+                {% elif attr.has_json_conversion %}
+                {{ attr.name }}=(_safe_json_loads(entity.get("{{ _col_name_dict }}", entity.get("{{ attr.name }}")), []) if entity.get("{{ _col_name_dict }}", entity.get("{{ attr.name }}")) else []) if "{{ _col_name_dict }}" in entity or "{{ attr.name }}" in entity else None,
+                {% elif attr.is_array and attr.items_ref_model %}
+                {% if attr.persistence %}
+                {{ attr.name }}=[{{ attr.items_ref_model | title }}Mapper.to_domain(item) for item in entity.get("{{ attr.name }}")] if entity.get("{{ attr.name }}") else None,
+                {% endif %}
+                {% elif attr.is_array and not attr.items_ref_model %}
+                {{ attr.name }}=entity.get("{{ _col_name_dict }}", entity.get("{{ attr.name }}")),
+                {% else %}
+                {{ attr.name }}=entity.get("{{ attr.name }}", entity.get("{{ _col_name_dict }}")),
+                {% endif %}
+                {% endfor %}
+            )
+            
+        return {{ entity_name | title }}(
+            {% for attr in attributes %}
+            {% if attr.type == 'Relation' and not attr.is_array %}
+            {{ attr.name }}=entity.{{ attr.name }} if "{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}" not in inspect(entity).unloaded else None,
+            {% elif attr.has_json_conversion %}
+            {{ attr.name }}=_safe_json_loads(entity.{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}, []) if entity.{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }} else [],
+            {% elif attr.is_array and attr.items_ref_model %}
+            {% if attr.persistence %}
+            {{ attr.name }}=[{{ attr.items_ref_model | title }}Mapper.to_domain(item) for item in entity.{{ attr.name }}] if "{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}" not in inspect(entity).unloaded and entity.{{ attr.name }} else None,
+            {% endif %}
+            {% elif attr.is_array and not attr.items_ref_model %}
+            {% set _child_tbl2 = table_name + '_' + attr.name | snake %}{% set _ns_map = namespace(standalone=false) %}{% if all_entities %}{% for _en2, _ev2 in all_entities.items() if _ev2.table_name == _child_tbl2 %}{% set _ns_map.standalone = true %}{% endfor %}{% endif %}
+            {% if not _ns_map.standalone %}{{ attr.name }}=[item.value for item in entity.{{ attr.name }}] if "{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}" not in inspect(entity).unloaded and entity.{{ attr.name }} else None,{% endif %}
+            {% else %}
+            {% set _col_name = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name | snake %}
+            {% if _col_name not in ns_fk.fk_columns %}
+            {{ attr.name }}=(entity.{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }} if "{{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}" not in inspect(entity).unloaded else None),
+            {% else %}
+            {{ attr.name }}=(entity.{{ _col_name }} if hasattr(entity, "{{ _col_name }}") else None),
+            {% endif %}
+            {% endif %}
+            {% endfor %}
+        )
+
+    @staticmethod
+    def to_entity(model: {{ entity_name | title }}) -> {{ entity_name | title }}Model:
+        if not model:
+            return None
+            
+        return {{ entity_name | title }}Model(
+            {% for attr in attributes %}
+            {% if attr.type == 'Relation' and not attr.is_array %}
+            {% if attr.persistence and attr.persistence.foreign_column and not attr.persistence.column %}
+            {# Inverse relation - skip FK in to_entity #}
+            {% else %}
+            {{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name + '_id' }}=(model.{{ attr.name }} if isinstance(model.{{ attr.name }}, (int, str, float)) else model.{{ attr.name }}.id if model.{{ attr.name }} else None),
+            {% endif %}
+            {% elif attr.has_json_conversion %}
+            {{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}=json.dumps(model.{{ attr.name }}) if model.{{ attr.name }} else None,
+            {% elif attr.is_array and attr.items_ref_model %}
+            {% if attr.persistence %}
+            {{ attr.name }}=[{{ attr.items_ref_model | title }}Mapper.to_entity(item) for item in (model.{{ attr.name }} or [])],
+            {% endif %}
+            {% elif attr.is_array and not attr.items_ref_model %}
+            {% set _child_tbl3 = table_name + '_' + attr.name | snake %}{% set _ns_ent = namespace(standalone=false) %}{% if all_entities %}{% for _en3, _ev3 in all_entities.items() if _ev3.table_name == _child_tbl3 %}{% set _ns_ent.standalone = true %}{% endfor %}{% endif %}
+            {% if not _ns_ent.standalone %}{{ attr.name }}=[{{ entity_name | title }}{{ attr.name | title }}Model(value=item) for item in (model.{{ attr.name }} or [])],{% endif %}
+            {% else %}
+            {% set _col_name2 = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name | snake %}
+            {% if _col_name2 not in ns_fk.fk_columns %}
+            {{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }}=model.{{ attr.name }},
+            {% endif %}
+            {% endif %}
+            {% endfor %}
+        )
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

@@ -1,0 +1,60 @@
+{# RPC client template for send operations WITH reply (request-reply).
+   Per AsyncAPI v3 spec: uses explicit request/reply channels for
+   interoperability with non-FastStream clients (Go, Java, etc.).
+
+   If reply_channel is defined → explicit channel pattern (standard).
+   If reply_channel is empty   → fallback to rpc=True (FastStream only). #}
+"""
+RPC Client: {{ operation_name }}
+Request Channel: {{ request_channel }}
+Reply Channel: {{ reply_channel | default('(dynamic / FastStream internal)') }}
+"""
+{% if request_dto_class %}
+from src.application.dtos.{{ request_dto_module }}_dto import {{ request_dto_class }}
+{% endif %}
+{% if response_dto_class %}
+from src.application.dtos.{{ response_dto_module }}_dto import {{ response_dto_class }}
+{% endif %}
+
+
+{% if reply_channel %}
+async def {{ operation_name | snake }}(broker, request: {{ request_dto_class | default('dict', true) }}) -> None:
+    """Publish request to {{ request_channel }}.
+
+    AsyncAPI Request-Reply pattern with explicit channels.
+    The reply will arrive on {{ reply_channel }} — register a
+    @broker.subscriber("{{ reply_channel }}") handler to process it.
+    """
+    await broker.publish(request, topic="{{ request_channel }}")
+{% else %}
+async def {{ operation_name | snake }}(broker, request: {{ request_dto_class | default('dict', true) }}) -> {{ response_dto_class | default('dict', true) }}:
+    """Send a request to {{ request_channel }} and await reply.
+
+    WARNING: Uses FastStream internal rpc=True mechanism.
+    This only works when both sides use FastStream.
+    For cross-platform interoperability, define an explicit reply
+    channel in your AsyncAPI spec.
+    """
+    response = await broker.publish(
+        request,
+        topic="{{ request_channel }}",
+        rpc=True,
+        rpc_timeout=30.0,
+    )
+    {% if response_dto_class %}
+    return {{ response_dto_class }}.model_validate(response)
+    {% else %}
+    return response
+    {% endif %}
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

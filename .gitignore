@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.egg-info/
+*.pyc
+.venv/
+*.egg
+
+# Build
+package/build/
+package/dist/
+
+# OS
+.DS_Store
+
+# Generated outputs (not part of package)
+output_*/
+DataDashboardExample/examples/output/
+temp_*.json
+
+# Test artifacts
+test.db
+*.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Demo files (not part of package)
+demo_*.json
+
+project.json
+
+
+# Docs (internal)
+guia.md
+valid.openapi.yaml
+
+# Debug and Verification Scripts
+TEST_REPORT.md
+README_TESTING.md
+
+# Testing Outputs
+tests/e2e/
+tests/outputs/
+dev/
+docs/research/resources/api_test_crud.yaml
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+temp_*

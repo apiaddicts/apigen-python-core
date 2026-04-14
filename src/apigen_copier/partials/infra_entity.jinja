@@ -1,0 +1,168 @@
+{% set ns_join = namespace(need_table_import=false) %}
+{% for attr in attributes if attr.is_array and attr.items_ref_model and attr.persistence and attr.persistence.join_table %}
+{% set join_exists = namespace(found=false) %}
+{% if all_entities %}
+{% for ent_name, ent in all_entities.items() if ent.table_name == attr.persistence.join_table %}
+{% set join_exists.found = true %}
+{% endfor %}
+{% endif %}
+{% if not join_exists.found %}
+{% set ns_join.need_table_import = true %}
+{% endif %}
+{% endfor %}
+from sqlalchemy import Column, String, Text, Integer, BigInteger, Boolean, Float, Numeric, Date, DateTime, ForeignKey{% if ns_join.need_table_import %}, Table{% endif %}
+
+from sqlalchemy.orm import relationship
+from src.infrastructure.database import Base
+{% set ns_imported = namespace(models=[]) %}
+{% for attr in attributes %}
+{% if attr.is_array and attr.items_ref_model and attr.items_ref_model not in ns_imported.models %}
+from src.infrastructure.entities.{{ attr.items_ref_model | lower }}.{{ attr.items_ref_model | lower }}_entity import {{ attr.items_ref_model | title }}Model
+{% if ns_imported.models.append(attr.items_ref_model) %}{% endif %}
+{% endif %}
+{% endfor %}
+{# Import FK target models so SQLAlchemy can resolve relationship() string refs #}
+{% for attr in attributes %}
+{% if attr.type == 'Relation' and not attr.is_array %}
+{% set fk_model = attr.ref_model if attr.ref_model else attr.name | title %}
+{% if fk_model != entity_name and fk_model not in ns_imported.models %}
+from src.infrastructure.entities.{{ fk_model | lower }}.{{ fk_model | lower }}_entity import {{ fk_model | title }}Model  # noqa: E402
+{% if ns_imported.models.append(fk_model) %}{% endif %}
+{% endif %}
+{% endif %}
+{% endfor %}
+
+{% for attr in attributes if attr.is_array and attr.items_ref_model and attr.persistence and attr.persistence.join_table %}
+{% set join_exists = namespace(found=false) %}
+{% if all_entities %}
+{% for ent_name, ent in all_entities.items() if ent.table_name == attr.persistence.join_table %}
+{% set join_exists.found = true %}
+{% endfor %}
+{% endif %}
+{% if not join_exists.found %}
+{{ attr.name | lower }}_association = Table(
+    "{{ attr.persistence.join_table }}",
+    Base.metadata,
+    Column("{{ attr.persistence.join_column if attr.persistence and attr.persistence.join_column else (attr.persistence.column if attr.persistence and attr.persistence.column else (table_name + '_id')) }}", {{ entity_pk_type }}, ForeignKey("{{ table_name }}.id")),
+    Column("{{ attr.persistence.inverse_join_column if attr.persistence and attr.persistence.inverse_join_column else (attr.items_ref_model | lower + '_id') }}", {{ related_pk_types[attr.items_ref_model] if attr.items_ref_model in related_pk_types else 'Integer' }}, ForeignKey("{{ all_entities[attr.items_ref_model].table_name if all_entities and attr.items_ref_model in all_entities else attr.items_ref_model | lower }}.id")),
+)
+{% endif %}
+{% endfor %}
+
+{% for attr in attributes if attr.is_array and not attr.items_ref_model and not attr.has_json_conversion %}
+{% set child_table_name = table_name + '_' + attr.name | snake %}
+{% set ns_child = namespace(exists=false) %}
+{% if all_entities %}
+{% for ent_name, ent in all_entities.items() if ent.table_name == child_table_name %}
+{% set ns_child.exists = true %}
+{% endfor %}
+{% endif %}
+{% if not ns_child.exists %}
+class {{ entity_name | title }}{{ attr.name | title }}Model(Base):
+    __tablename__ = "{{ child_table_name }}"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    {{ entity_name | lower }}_id = Column({{ entity_pk_type }}, ForeignKey("{{ table_name }}.id"))
+    value = Column({{ attr.items_type | sa_column_type(data_driver) }})
+{% endif %}
+{% endfor %}
+
+
+class {{ entity_name | title }}Model(Base):
+    __tablename__ = "{{ table_name }}"
+
+
+{# Pre-compute FK column names from ManyToOne relationships to avoid duplicates #}
+{% set ns = namespace(fk_columns=[]) %}
+{% for attr in attributes %}
+{% if attr.type == 'Relation' and not attr.is_array and not (attr.persistence and attr.persistence.foreign_column and not attr.persistence.column) %}
+{% set fk_col = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name + '_id' %}
+{% set _ = ns.fk_columns.append(fk_col) %}
+{% endif %}
+{% endfor %}
+{% for attr in attributes %}
+{% if attr.type == 'Relation' and not attr.is_array %}
+{% set model_test = attr.ref_model if attr.ref_model else attr.name | title %}
+{% set related_table = all_entities[model_test].table_name if all_entities and model_test in all_entities else (attr.ref_model | lower if attr.ref_model else attr.name | lower) %}
+{% if attr.persistence and attr.persistence.foreign_column and not attr.persistence.column %}
+{# Inverse relation (pass: true) - FK is on the OTHER table, no local FK column needed #}
+    {{ attr.name }} = relationship("{{ model_test | title }}Model", foreign_keys="{{ model_test | title }}Model.{{ attr.persistence.foreign_column }}", uselist=False, viewonly=True, lazy="noload")
+{% else %}
+{# Normal relation - FK is on THIS table #}
+{% set fk_column = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name + '_id' %}
+{% set fk_target = related_table + '.' + (attr.persistence.foreign_column if attr.persistence and attr.persistence.foreign_column else 'id') %}
+    {{ fk_column }} = Column("{{ fk_column }}", {{ related_pk_types[model_test] if model_test in related_pk_types else 'Integer' }}, ForeignKey("{{ fk_target }}"){% if attr.persistence and attr.persistence.primary_key %}, primary_key=True{% endif %})
+    {{ attr.name }} = relationship("{{ model_test | title }}Model", foreign_keys=[{{ fk_column }}], lazy="noload")
+{% endif %}
+{% elif attr.is_array and attr.items_ref_model %}
+{% if attr.persistence and attr.persistence.join_table %}
+{# N:M relationship with explicit join table #}
+{% set join_exists_rel = namespace(found=false) %}
+{% if all_entities %}
+{% for ent_name, ent in all_entities.items() if ent.table_name == attr.persistence.join_table %}
+{% set join_exists_rel.found = true %}
+{% endfor %}
+{% endif %}
+{% if join_exists_rel.found %}
+    {{ attr.name }} = relationship(
+        {{ attr.items_ref_model | title }}Model,
+        secondary="{{ attr.persistence.join_table }}",
+        lazy="noload",
+        viewonly=True,
+    )
+{% else %}
+    {{ attr.name }} = relationship(
+        {{ attr.items_ref_model | title }}Model,
+        secondary={{ attr.name | lower }}_association,
+        lazy="noload",
+    )
+{% endif %}
+{% elif attr.persistence and attr.persistence.foreign_column %}
+{# 1:N relationship - FK is on the child table #}
+{% set child_model = attr.items_ref_model %}
+{% set child_table = all_entities[child_model].table_name if all_entities and child_model in all_entities else child_model | lower %}
+    {{ attr.name }} = relationship("{{ child_model | title }}Model", foreign_keys="{{ child_model | title }}Model.{{ attr.persistence.foreign_column }}", viewonly=True, lazy="noload")
+{% elif attr.persistence %}
+{# Fallback: assume join table with defaults #}
+    {{ attr.name }} = relationship(
+        {{ attr.items_ref_model | title }}Model,
+        lazy="noload",
+    )
+{% endif %}
+{# Skip relationship generation for array refs with no persistence config #}
+{% elif attr.is_array and attr.has_json_conversion %}
+{# SmartMapping: store array as JSON string in a single column #}
+{% set col_name = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name | snake %}
+    {{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }} = Column("{{ col_name }}", {% if data_driver == 'mysql' %}Text{% else %}String{% endif %})
+{% elif attr.is_array %}
+{% set child_table_check = table_name + '_' + attr.name | snake %}
+{% set ns_arr = namespace(standalone=false) %}
+{% if all_entities %}
+{% for ent_name, ent in all_entities.items() if ent.table_name == child_table_check %}
+{% set ns_arr.standalone = true %}
+{% endfor %}
+{% endif %}
+{% if not ns_arr.standalone %}
+    {{ attr.name }} = relationship(
+        "{{ entity_name | title }}{{ attr.name | title }}Model",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+{% endif %}
+{% else %}
+{% set col_name = attr.persistence.column if attr.persistence and attr.persistence.column else attr.name | snake %}
+{% if col_name not in ns.fk_columns %}
+    {{ attr.persistence.column if attr.persistence and attr.persistence.column else attr.name }} = Column("{{ col_name }}", {{ attr.type | sa_column_type(data_driver) }}{% if attr.persistence and attr.persistence.primary_key %}, primary_key=True{% endif %}{% if attr.persistence and attr.persistence.autogenerated and (attr.type == 'Integer' or attr.type == 'Long') %}, autoincrement=True{% endif %}{% if attr.persistence and attr.persistence.primary_key and attr.persistence.autogenerated and (attr.type == 'String' or attr.type == 'str') %}, default=lambda: str(__import__('uuid').uuid4()){% endif %})
+{% endif %}
+{% endif %}
+{% endfor %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

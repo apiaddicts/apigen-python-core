@@ -1,0 +1,23 @@
+
+"""
+DTO: {{ class_name }}
+Generated from AsyncAPI components.schemas.{{ schema_name }}
+"""
+from enum import Enum
+
+
+class {{ class_name }}(str, Enum):
+{% for value in enum_values %}
+    {{ value | upper | replace('-', '_') | replace(' ', '_') }} = "{{ value }}"
+{% endfor %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

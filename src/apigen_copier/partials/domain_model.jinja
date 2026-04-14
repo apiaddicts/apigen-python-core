@@ -1,0 +1,135 @@
+from __future__ import annotations
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices, field_validator
+from typing import List, Optional, Any, Union
+from datetime import date, datetime
+from decimal import Decimal
+import json as _json
+import sys
+
+class {{ entity_name | title }}(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+{% for attr in attributes %}
+{% if attr.warning %}
+    # {{ attr.warning }}
+{% endif %}
+{% if attr.has_json_conversion and attr.persistence and attr.persistence.column and attr.persistence.column != attr.name %}
+    {{ attr.name }}: Optional[List[{% if attr.items_ref_model %}{{ attr.items_ref_model | title }}{% elif attr.items_type %}{{ attr.items_type | python_type }}{% else %}Any{% endif %}]] = Field(default=None, validation_alias=AliasChoices("{{ attr.name }}", "{{ attr.persistence.column }}"))
+{% elif attr.persistence and attr.persistence.column and attr.persistence.column != attr.name and attr.type != 'Relation' and not attr.is_array and not attr.has_json_conversion %}
+    {{ attr.name }}: Optional[{% if attr.type == 'Relation' and attr.ref_model %}Union[int, str, {{ attr.ref_model | title }}]{% else %}{{ attr.type | python_type }}{% endif %}] = Field(default=None, validation_alias=AliasChoices("{{ attr.name }}", "{{ attr.persistence.column }}"))
+{% else %}
+    {{ attr.name }}: Optional[{% if attr.is_array or attr.has_json_conversion %}List[{% if attr.items_ref_model %}Union[int, str, {{ attr.items_ref_model | title }}]{% else %}{{ attr.items_type | python_type }}{% endif %}]{% elif attr.type == 'Relation' and attr.ref_model %}Union[int, str, {{ attr.ref_model | title }}]{% else %}{{ attr.type | python_type }}{% endif %}] = None
+{% endif %}
+{% endfor %}
+{% set _json_fields = [] %}
+{% for attr in attributes %}
+{% if attr.has_json_conversion %}
+{% set _ = _json_fields.append(attr.name) %}
+{% endif %}
+{% endfor %}
+{% if _json_fields %}
+
+    @field_validator({{ _json_fields | map('tojson') | join(', ') }}, mode='before')
+    @classmethod
+    def _parse_json_strings(cls, v):
+        if isinstance(v, str):
+            try:
+                return _json.loads(v)
+            except (ValueError, TypeError):
+                return [v] if v else []
+        return v
+{% endif %}
+
+{% if has_rw_fields %}
+# ── OPENAPI-002: readOnly/writeOnly split models ──────────────
+
+class {{ entity_name | title }}Get(BaseModel):
+    """Response model — includes readOnly, excludes writeOnly."""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+{% for attr in attributes %}
+{% if not attr.write_only %}
+{% if attr.is_array or attr.has_json_conversion %}
+    {{ attr.name }}: Optional[List[{% if attr.items_ref_model %}{{ attr.items_ref_model | title }}{% else %}{{ attr.items_type | python_type }}{% endif %}]] = None
+{% elif attr.type == 'Relation' and attr.ref_model %}
+    {{ attr.name }}: Optional[{{ attr.ref_model | title }}] = None
+{% else %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = None
+{% endif %}
+{% endif %}
+{% endfor %}
+
+class {{ entity_name | title }}Create(BaseModel):
+    """POST request model — excludes readOnly."""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+{% for attr in attributes %}
+{% if not attr.read_only %}
+{% if attr.is_array or attr.has_json_conversion %}
+    {{ attr.name }}: Optional[List[{% if attr.items_ref_model %}{{ attr.items_ref_model | title }}{% else %}{{ attr.items_type | python_type }}{% endif %}]] = None
+{% elif attr.type == 'Relation' and attr.ref_model %}
+    {{ attr.name }}: Optional[{{ attr.ref_model | title }}] = None
+{% else %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = None
+{% endif %}
+{% endif %}
+{% endfor %}
+
+class {{ entity_name | title }}Update(BaseModel):
+    """PUT/PATCH request model — excludes readOnly, all fields Optional."""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+{% for attr in attributes %}
+{% if not attr.read_only %}
+{% if attr.is_array or attr.has_json_conversion %}
+    {{ attr.name }}: Optional[List[{% if attr.items_ref_model %}{{ attr.items_ref_model | title }}{% else %}{{ attr.items_type | python_type }}{% endif %}]] = None
+{% elif attr.type == 'Relation' and attr.ref_model %}
+    {{ attr.name }}: Optional[{{ attr.ref_model | title }}] = None
+{% else %}
+    {{ attr.name }}: Optional[{{ attr.type | python_type }}] = None
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{%- set imported_models = [] -%}
+{%- for attr in attributes -%}
+{%- if attr.items_ref_model and attr.items_ref_model not in imported_models %}
+{% set _ = imported_models.append(attr.items_ref_model) %}
+{%- endif -%}
+{%- if attr.ref_model and attr.ref_model not in imported_models %}
+{% set _ = imported_models.append(attr.ref_model) %}
+{%- endif -%}
+{%- endfor %}
+{% if imported_models %}
+# Deferred imports and model rebuild for forward references
+_rebuilding = False
+def _rebuild_model():
+    global _rebuilding
+    if _rebuilding:
+        return
+    _rebuilding = True
+    _module = sys.modules[__name__]
+{% for model in imported_models %}
+    from src.domain.models.{{ model | lower }}.{{ model | lower }}_model import {{ model | title }}
+    _module.{{ model | title }} = {{ model | title }}
+{% endfor %}
+    try:
+        {{ entity_name | title }}.model_rebuild()
+{% if has_rw_fields %}
+        {{ entity_name | title }}Get.model_rebuild()
+        {{ entity_name | title }}Create.model_rebuild()
+        {{ entity_name | title }}Update.model_rebuild()
+{% endif %}
+    except Exception:
+        pass  # Will be rebuilt when routes import models
+
+_rebuild_model()
+{% endif %}
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE START
+# Write your custom code below this line.
+# You can add imports, override functions, add new methods, etc.
+# ════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════
+# ✏️ CUSTOM CODE END
+# ════════════════════════════════════════════════════════════════

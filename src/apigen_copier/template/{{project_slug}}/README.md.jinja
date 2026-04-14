@@ -1,0 +1,60 @@
+# {{ project.name }}
+
+{{ project.description }}
+
+## Requisitos
+
+Instalar [uv](https://docs.astral.sh/uv/):
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+## Inicio Rápido
+
+```bash
+# Crear entorno virtual
+uv venv
+
+# Instalar dependencias
+uv sync
+
+# Ejecutar servidor
+uv run uvicorn src.main:app --reload
+```
+
+## Configuración
+
+Copiar `.env.example` a `.env` y configurar las variables:
+
+```bash
+cp .env.example .env
+```
+
+## Docker
+
+Ejecutar con un solo comando:
+
+```bash
+# Construir y ejecutar
+docker compose up --build
+
+# O en segundo plano
+docker compose up -d --build
+```
+
+La API estará disponible en `http://localhost:8000`
+
+## Verificación de Dependencias
+
+Para verificar las librerías instaladas dentro del contenedor Docker (incluyendo drivers de base de datos), ejecuta:
+
+```bash
+make check-deps
+```
+
+Esto mostrará la lista de paquetes instalados usando `uv pip list`.
