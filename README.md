@@ -1,103 +1,364 @@
-# Generador de API Hospital (ODS Examples)
+# ApigenPythonCore
 
-Este repositorio contiene ejemplos de cómo generar una API FastAPI basada en una especificación OpenAPI (`api-hospital.yaml`) utilizando 4 tecnologías de templating diferentes.
+[![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python >=3.13](https://img.shields.io/badge/Python-%3E%3D3.13-blue)](https://www.python.org/downloads/)
+[![GitHub Release](https://img.shields.io/github/v/release/apiaddicts/ods-data-generator-examples)](https://github.com/apiaddicts/apigen-python-core/releases)
 
-El objetivo es demostrar las diferencias, ventajas y desventajas de cada herramienta.
+`apigen_copier` is a Python package that generates backend project scaffolds from API contracts.
 
-## Estructura del Proyecto
+It is designed to be used as a **dependency inside other Python projects** that want to automate service creation from **OpenAPI** or **AsyncAPI** input. The generator reads a structured contract, applies Copier + Jinja templates, and creates a project skeleton that can later be extended by hand.
 
-```text
-.
-├── Dockerfile                  # Para ejecutar todos los generadores fácilmente
-├── COMPARISON.md               # Comparativa detallada de las herramientas
-├── resources/                  # Archivos compartidos
-│   ├── MasterTemplate/         # Plantilla base Jinja2
-│   ├── api-hospital.yaml       # Especificación OpenAPI
-│   └── ...
-└── technologies/               # Generadores específicos
-    ├── cookiecutter/
-    ├── copier/
-    ├── cruft/
-    └── pyscaffold/
-```
+## What this project is for
 
-## Tecnologías Utilizadas
+This repository is useful when you want to:
 
-1.  **CookieCutter**: El estándar de facto. Simple y efectivo.
-2.  **Copier**: Más moderno, permite actualizaciones inteligentes.
-3.  **Cruft**: Wrapper de CookieCutter con gestión de estado (git-friendly).
-4.  **PyScaffold**: Generador de estructura de proyectos robusta.
+- generate a Python service from an API-first contract
+- standardize the structure of generated projects across teams
+- bootstrap REST or event-driven services with less manual setup
+- regenerate a project without losing preserved custom code blocks
 
-Puedes ver una comparativa detallada en [COMPARISON.md](COMPARISON.md).
+The generated output is focused on a layered Python backend structure, including domain models, infrastructure code, routes, services, repositories, mappers, and supporting files.
 
-## Cómo Ejecutar
+## Main use cases
 
-### Opción 1: Docker (Recomendada)
+### 1. OpenAPI -> generated REST project
 
-Hemos preparado un contenedor que tiene todas las herramientas instaladas.
+Use `generate_project(...)` when your input is an OpenAPI YAML or JSON file.
 
-1.  **Construir la imagen**:
-    ```bash
-    docker build -t hospital-generators .
-    ```
+The package parses:
 
-2.  **Ejecutar los generadores**:
-    Montamos el volumen `technologies` para que los archivos generados aparezcan en tu máquina local.
-    ```bash
-    docker run -v $(pwd)/technologies:/app/technologies hospital-generators
-    ```
+- `x-apigen-project` for project-level configuration
+- `components.x-apigen-models` for domain/entity definitions
+- `paths` plus `x-apigen-binding` for route-to-model binding
+- `components.schemas` for request and response shapes
 
-    Esto ejecutará los 4 generadores secuencialmente. Verás los resultados en `technologies/{herramienta}/output/`.
+### 2. AsyncAPI -> generated event-driven project
 
-### Opción 2: Ejecución Manual
+Use `generate_async_project(...)` when your input is already parsed into a Python `dict` compatible with `AsyncAPIProjectSchema`.
 
-Requiere Python 3.10+ y las dependencias instaladas.
+This flow is intended for event-driven services and supports concepts such as:
 
-1.  **Instalar dependencias**:
-    ```bash
-    pip install cookiecutter copier cruft pyscaffold pyyaml
-    ```
+- brokers and servers
+- channels
+- operations
+- message payload schemas
+- entity definitions used during generation
 
-2.  **Ejecutar un generador específico**:
-    ```bash
-    python3 technologies/cookiecutter/generate.py
-    # o
-    python3 technologies/copier/generate.py
-    # etc.
-    ```
+## Installation
 
-## Verificación
-
-Para asegurarte de que todo se ha generado correctamente, puedes ejecutar el script de verificación:
+### Install with pip
 
 ```bash
-python3 resources/verify_generation.py
+pip install "git+https://gitlab.com/cloudappi/clo-innova/opendataspace/ods-data-generator-examples.git"
 ```
 
-## Documentación Específica
+### Add it to `requirements.txt`
 
-Cada carpeta en `technologies/` tiene su propio `README.md` con detalles sobre cómo funciona esa herramienta específica:
+```txt
+git+https://gitlab.com/cloudappi/clo-innova/opendataspace/ods-data-generator-examples.git
+```
 
-- [CookieCutter README](technologies/cookiecutter/README.md)
-- [Copier README](technologies/copier/README.md)
-- [Cruft README](technologies/cruft/README.md)
-- [PyScaffold README](technologies/pyscaffold/README.md)
-
-Se escoge copier, se desarrolla un template y se publica como paquete
-
-# Cómo usarlo en otros repositorios:
-### Instalar: 
-Puedes instalarlo directamente desde este git (si subes los cambios) o desde tu carpeta local:
+### Install from a local clone
 
 ```bash
-pip install git+https://gitlab.com/cloudappi/clo-innova/opendataspace/ods-data-generator-examples.git@develop#subdirectory=package
+pip install .
 ```
-Usar en código:
+
+## Public API
+
+The package exposes these main entry points:
+
+```python
+from apigen_copier import (
+    generate_project,
+    generate_from_schema,
+    generate_async_project,
+    generate_from_async_schema,
+)
+```
+
+## How to use it in another Python project
+
+The most common integration is:
+
+1. Add `apigen_copier` as a dependency
+2. Store an API contract in your project
+3. Call the generator from a Python script, command, or build step
+4. Commit or process the generated output
+
+Example:
 
 ```python
 from apigen_copier import generate_project
+
 generate_project(
-    yaml_path="mi-api.yaml",
-    output_dir="mi-proyecto-generado"
+    input_path="specs/petstore.yaml",
+    output_dir="generated/pet-service",
 )
 ```
+
+If you want to regenerate an existing generated project and preserve custom code blocks:
+
+```python
+from apigen_copier import generate_project
+
+generate_project(
+    input_path="specs/petstore.yaml",
+    output_dir="generated/pet-service",
+    existing_project_dir="generated/pet-service",
+)
+```
+
+## Expected input for OpenAPI generation
+
+For `generate_project(...)`, the input must be a YAML or JSON file.
+
+If the file contains `openapi` or `swagger`, the package treats it as an OpenAPI specification and parses it automatically.
+
+### Minimum recommended structure
+
+```yaml
+openapi: 3.0.0
+info:
+  title: Pet API
+  version: 1.0.0
+
+x-apigen-project:
+  name: Pet Service
+  version: 1.0.0
+  description: Service generated from OpenAPI
+  data-driver: postgresql
+  prefix: /api/v1
+
+paths:
+  /pets:
+    x-apigen-binding:
+      model: Pet
+    get:
+      operationId: listPets
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createPet
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PetCreate"
+      responses:
+        "201":
+          description: Created
+
+  /pets/{id}:
+    x-apigen-binding:
+      model: Pet
+    get:
+      operationId: getPetById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PetGet"
+
+components:
+  x-apigen-models:
+    Pet:
+      relational-persistence:
+        table: pets
+      attributes:
+        - name: id
+          type: String
+          relational-persistence:
+            primary-key: true
+            autogenerated: true
+        - name: name
+          type: String
+        - name: status
+          type: String
+
+  schemas:
+    PetGet:
+      x-apigen-mapping:
+        model: Pet
+        method: get
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+
+    PetCreate:
+      x-apigen-mapping:
+        model: Pet
+        method: post
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+```
+
+### Input rules that matter
+
+- `x-apigen-project` defines the generated project metadata
+- `components.x-apigen-models` defines the domain models used by the generator
+- each model should define a primary key
+- only operations with `x-apigen-binding` are turned into generated routers
+- `components.schemas` is used to infer request and response models
+- `data-driver` currently accepts values such as `postgresql`, `mysql`, `oracle`, `sqlite`, `mssql`, and `s3`
+
+## Expected input for AsyncAPI generation
+
+For `generate_async_project(...)`, the input is a Python `dict`, not a raw file path.
+
+At minimum, the dictionary should contain:
+
+- `project`
+- `servers`
+- `channels`
+- `operations`
+- `entities`
+- `components`
+
+Example:
+
+```python
+from apigen_copier import generate_async_project
+
+parsed_data = {
+    "project": {
+        "name": "order-events-service",
+        "version": "1.0.0",
+        "description": "Async generated service",
+        "data-driver": "postgresql",
+    },
+    "servers": {
+        "kafka-dev": {
+            "host": "localhost:9092",
+            "protocol": "kafka",
+            "security": [],
+        }
+    },
+    "channels": {
+        "orderEvents": {
+            "address": "orders.events",
+            "parameters": {},
+            "messages": {},
+        }
+    },
+    "operations": {
+        "onOrderCreated": {
+            "action": "receive",
+            "channel": {
+                "address": "orders.events",
+                "parameters": {},
+                "messages": {},
+            },
+            "bindings": {"kafka": {"groupId": "order-service-group"}},
+            "reply": None,
+            "messages": [],
+        }
+    },
+    "entities": {
+        "Order": {
+            "table": "orders",
+            "attributes": [
+                {
+                    "name": "id",
+                    "type": "String",
+                    "relational-persistence": {
+                        "primary-key": True,
+                        "autogenerated": False,
+                    },
+                }
+            ],
+        }
+    },
+    "components": {
+        "schemas": {}
+    },
+}
+
+generate_async_project(
+    parsed_data=parsed_data,
+    output_dir="generated/order-events-service",
+)
+```
+
+## What gets generated
+
+Depending on the input and template, the package can generate files such as:
+
+- project scaffolding
+- domain models
+- route modules
+- repositories
+- services
+- mappers
+- broker configuration
+- DTOs and response models
+
+## Regeneration and custom code preservation
+
+One of the important features of this package is regeneration support.
+
+When `existing_project_dir` is provided, the generator can:
+
+- extract preserved custom code blocks from the previous project
+- inject them into the regenerated project
+- copy an existing `UserCode/` folder into the new output
+
+This makes the package suitable not only for one-time scaffolding, but also for iterative generation workflows.
+
+## Typical integration pattern
+
+In a consuming repository, a common setup is:
+
+```text
+my-python-project/
+├── specs/
+│   └── petstore.yaml
+├── scripts/
+│   └── generate_service.py
+├── generated/
+│   └── pet-service/
+└── pyproject.toml or requirements.txt
+```
+
+Example generator script:
+
+```python
+from apigen_copier import generate_project
+
+def main() -> None:
+    generate_project(
+        input_path="specs/petstore.yaml",
+        output_dir="generated/pet-service",
+    )
+
+if __name__ == "__main__":
+    main()
+```
+
+Then run:
+
+```bash
+python scripts/generate_service.py
+```
+
+## Summary
+
+`apigen_copier` is a reusable Python dependency for teams that want to generate backend projects from API contracts instead of writing the initial boilerplate by hand. Its main value is that it turns structured API input into a maintainable project skeleton and supports safe regeneration when the contract evolves.
